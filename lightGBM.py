@@ -13,10 +13,10 @@ import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 
 def labeling(x):
-    if x > 0.1:
-        return 2
-    else:
+    if x > 0.:
         return 1
+    else:
+        return 0
 
 def model_selection(x):
     data = x[:6]
@@ -80,7 +80,7 @@ params['num_class']=3
 bst = lgb.train(params, train_set=train, valid_sets=[valid])'''
 #plt.show()
 
-clf = tree.DecisionTreeClassifier(max_depth=1)
+clf = tree.DecisionTreeClassifier(max_depth=5)
 clf = clf.fit(train.drop('label', axis=1), train.label)
 clf.predict(test.drop('label', axis=1))
 print(confusion_matrix(test.label, clf.predict(test.drop('label', axis=1))))
