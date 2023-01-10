@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import datetime as dt
 from dateutil.relativedelta import relativedelta
+from joblib import dump, load
 
 #from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
@@ -12,11 +13,11 @@ from sklearn.linear_model import Ridge
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error
 
-from skforecast.ForecasterAutoregMultiVariate.ForecasterAutoregMultiVariate_KJCustom import ForecasterAutoregMultiVariate
-from skforecast.model_selection_multiseries import backtesting_forecaster_multiseries
-from skforecast.model_selection_multiseries import grid_search_forecaster_multiseries
-from skforecast.model_selection_multiseries import random_search_forecaster_multiseries
-from skforecast.plot import plot_residuals
+from skforecast_kjCustom.ForecasterAutoregMultiVariate import ForecasterAutoregMultiVariate
+from skforecast_kjCustom.model_selection_multiseries import backtesting_forecaster_multiseries
+from skforecast_kjCustom.model_selection_multiseries import grid_search_forecaster_multiseries
+from skforecast_kjCustom.model_selection_multiseries import random_search_forecaster_multiseries
+from skforecast_kjCustom.plot import plot_residuals
 
 import matplotlib.pyplot as plt
 from statsmodels.graphics.tsaplots import plot_acf
@@ -59,6 +60,7 @@ def data_split(data, date):
 data = pd.read_excel('./data/reinforce_result.xlsx', sheet_name='History', index_col=0, parse_dates=True)
 m_rtn = pd.read_excel('./data/reinforce_result.xlsx', sheet_name='Kmrtn', index_col=0, parse_dates=True)
 d_rtn = pd.read_excel('./data/reinforce_result.xlsx', sheet_name='Kdrtn', index_col=0, parse_dates=True)
+d_idx = pd.read_excel('./data/reinforce_result.xlsx', sheet_name='Kidx', index_col=0, parse_dates=True)
 
 data = data.drop(labels=['Kospi Rtn', '3m Precision', 'Precision'], axis=1)
 data['model'] = data.apply(model_selection, axis=1)
@@ -66,7 +68,7 @@ data.Forecast = data.Forecast.apply(prediction_categ)
 data.model = data.model.astype('int')
 data.Forecast = data.Forecast.astype('int')
 
-SHARPE_df = pd.DataFrame(columns=['Sharpe', 'pre_Sharpe'])
+rtn_df = pd.DataFrame(columns=['y_Rtn', 'MonthlyRtn'])
 
 for startdate in data.index:
     enddate = startdate + relativedelta(months=1)
@@ -78,32 +80,24 @@ for startdate in data.index:
     windowed = d_rtn[(d_rtn.index>startdate) & (d_rtn.index<=enddate)]
     pre_windowed = d_rtn[(d_rtn.index>pre_startdate) & (d_rtn.index<=startdate)]
 
-    SHARPE = ((windowed/100 + 1).prod()-1)*100# / (windowed.std() * np.sqrt(len(windowed)))
-    pre_SHARPE = ((pre_windowed / 100 + 1).prod() - 1) * 100# / (pre_windowed.std() * np.sqrt(len(pre_windowed)))
+    y_Rtn = ((windowed/100 + 1).prod()-1)*100# / (windowed.std() * np.sqrt(len(windowed)))
+    MonthlyRtn = ((pre_windowed / 100 + 1).prod() - 1) * 100# / (pre_windowed.std() * np.sqrt(len(pre_windowed)))
     #SHARPE = (windowed.std() * np.sqrt(len(windowed)))
     #pre_SHARPE = (pre_windowed.std() * np.sqrt(len(pre_windowed)))
 
-    SHARPE_df = SHARPE_df.append(pd.DataFrame({'Sharpe':SHARPE.values,
-                                               'pre_Sharpe':pre_SHARPE.values}
+    rtn_df = rtn_df.append(pd.DataFrame({'y_Rtn':y_Rtn.values,
+                                               'MonthlyRtn':MonthlyRtn.values}
                                               , index=[startdate]))
 
-data['m_rtn'] = SHARPE_df.pre_Sharpe
-SHARPE_df['label'] = SHARPE_df.Sharpe.apply(labeling)
-print(SHARPE_df.groupby(by='label').count())
+data['MonthlyRtn'] = rtn_df.MonthlyRtn
+rtn_df['label'] = rtn_df.y_Rtn.apply(labeling)
+print(rtn_df.groupby(by='label').count())
 
-data = pd.concat([data,SHARPE_df.Sharpe], axis=1).dropna()
-train, test = data_split(data, '2015-03-31')
+data = pd.concat([data, rtn_df.y_Rtn], axis=1).dropna()
+end_val = '2015-03-31'
+train, test = data_split(data, end_val)
 
-forecaster = ForecasterAutoregMultiVariate(
-                 regressor          = LGBMRegressor(random_state=123,
-                                                    max_depth='3'),
-                 level              = 'Sharpe',
-                 lags               = 52,
-                 steps              = 1,
-                 transformer_exog   = None,
-                 weight_func        = None,
-             )
-forecaster.fit(series=data)
+forecaster = load(filename='./model/forecaster.py')
 
 metrics_levels, backtest_predictions = backtesting_forecaster_multiseries(
                                            forecaster         = forecaster,
@@ -113,18 +107,45 @@ metrics_levels, backtest_predictions = backtesting_forecaster_multiseries(
                                            initial_train_size = len(train),
                                            refit              = True,
                                            fixed_train_size   = False,
-                                           verbose            = False
+                                           verbose            = False,
+                                           interval           = [10, 90],
+                                           interval_std_window = 26,
+                                           tqdm_on             = True
                                        )
 
 print(metrics_levels)
-pd.set_option('display.max_rows', len(forecaster.get_feature_importance(step=1)))
-print(forecaster.get_feature_importance(step=1).sort_values(by='importance'))
-'''fig, ax = plt.subplots()
-backtest_predictions.plot(ax=ax)
-test.Sharpe.plot(ax=ax)
-ax.legend(['Prediction','Actual'])
-plt.show()'''
-residuals = backtest_predictions['Sharpe'] - test.Sharpe
+
+#forecaster.fit(series=data)
+#pd.set_option('display.max_rows', len(forecaster.get_feature_importance(step=1)))
+#print(forecaster.get_feature_importance(step=1).sort_values(by='importance'))
+
+print(f'Prediction Accuracy : '
+      f'{(backtest_predictions.y_Rtn.apply(lambda x: 1 if x>0 else 0) == test.y_Rtn.apply(lambda x: 1 if x>0 else 0)).mean()}')
+
+#plot Time Series of prediction and actual
+test['Act'] = test.y_Rtn
+backtest_predictions_total = pd.concat([backtest_predictions, test.Act, d_idx], axis=1).dropna()
+backtest_predictions_rtn = backtest_predictions_total.iloc[:,:4]
+backtest_predictions_idx = (backtest_predictions_rtn / 100 + 1).multiply(backtest_predictions_total.IDX, axis=0)
+
+fig, ax = plt.subplots()
+backtest_predictions_idx.y_Rtn.plot(ax=ax, label='KOSPI Prediction')
+backtest_predictions_idx.Act.plot(ax=ax, label='KOSPI Actual')
+ax.fill_between(
+    backtest_predictions_idx.index,
+    backtest_predictions_idx.y_Rtn_upper_bound,
+    backtest_predictions_idx.y_Rtn_lower_bound,
+    color = 'deepskyblue',
+    alpha = 0.3,
+    label = '85% interval'
+)
+#test.y_Rtn.plot(ax=ax)
+#ax.legend(['Prediction','Actual'])
+ax.legend()
+plt.show()
+
+#plot statistics of prediction residual
+residuals = backtest_predictions['y_Rtn'] - test.y_Rtn
 plot_residuals(residuals=residuals)
 plt.show()
 

@@ -17,6 +17,8 @@ from sklearn.model_selection import ParameterGrid
 from sklearn.model_selection import ParameterSampler
 from sklearn.exceptions import NotFittedError
 
+from scipy.stats import t
+
 from ..model_selection.model_selection import _get_metric
 from ..model_selection.model_selection import _backtesting_forecaster_verbose
 
@@ -36,10 +38,12 @@ def _backtesting_forecaster_multiseries_refit(
     levels: Optional[Union[str, list]]=None,
     exog: Optional[Union[pd.Series, pd.DataFrame]]=None,
     interval: Optional[list]=None,
+    interval_std_window: Optional[int]=None,
     n_boot: int=500,
     random_state: int=123,
     in_sample_residuals: bool=True,
-    verbose: bool=False
+    verbose: bool=False,
+    tqdm_on: bool=False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Backtesting of forecaster model with a re-fitting strategy. A copy of the  
@@ -116,6 +120,9 @@ def _backtesting_forecaster_multiseries_refit(
     verbose : bool, default `False`
         Print number of folds and index of training and validation sets used for backtesting.
 
+    tqdm : bool, default 'False'
+        Print Progress by tqdm; Kj Custom Option
+
     Returns 
     -------
     metrics_levels : pandas DataFrame
@@ -179,7 +186,12 @@ def _backtesting_forecaster_multiseries_refit(
 
     store_in_sample_residuals = False if interval is None else True
 
-    for i in range(folds):
+    # if tqdm_on option is True, set tqdm progress bar
+    if tqdm_on:
+        range_option = tqdm(range(folds))
+    else:
+        range_option = range(folds)
+    for i in range_option:
         # In each iteration the model is fitted before making predictions.
         # if fixed_train_size the train size doesn't increase but moves by `steps` in each iteration.
         # if false the train size increases by `steps` in each iteration.
@@ -205,6 +217,34 @@ def _backtesting_forecaster_multiseries_refit(
                        levels      = levels, 
                        exog        = next_window_exog
                    )
+        elif interval is not None and 'MultiVariate' in str(forecaster):
+            pred = forecaster.predict(
+                steps=steps,
+                levels=levels,
+                exog=next_window_exog
+            )
+            if len(backtest_predictions) >= forecaster.max_lag :
+                if interval_std_window is None:
+                    pred_df = pd.concat(backtest_predictions)[forecaster.level]
+                else:
+                    pred_df = pd.concat(backtest_predictions)[forecaster.level][-interval_std_window:]
+                pred_df = pd.concat([pred_df, series[forecaster.level]], axis=1).dropna()
+                pred_df['resid'] = pred_df.iloc[:,0] - pred_df.iloc[:,1].values
+                resid_std = pred_df.resid.std()
+
+                t_crit_lower = np.abs(t.ppf(interval[1]/100, len(backtest_predictions)))
+                t_crit_upper = np.abs(t.ppf(1-interval[0]/100, len(backtest_predictions)))
+                coeff_lower = pred.values[0][0] - resid_std * t_crit_lower
+                coeff_upper = pred.values[0][0] + resid_std * t_crit_upper
+                pred = pd.DataFrame(data = [[pred.values[0][0], coeff_lower, coeff_upper]],
+                                    index = pred.index,
+                                    columns = [forecaster.level, f'{forecaster.level}_lower_bound', f'{forecaster.level}_upper_bound']
+                                    )
+            else:
+                pred = pd.DataFrame(data = [[pred.values[0][0], None, None]],
+                                    index = pred.index,
+                                    columns = [forecaster.level, f'{forecaster.level}_lower_bound', f'{forecaster.level}_upper_bound']
+                                    )
         else:
             pred = forecaster.predict_interval(
                        steps               = steps,
@@ -452,10 +492,12 @@ def backtesting_forecaster_multiseries(
     exog: Optional[Union[pd.Series, pd.DataFrame]]=None,
     refit: bool=False,
     interval: Optional[list]=None,
+    interval_std_window: Optional[int]=None,
     n_boot: int=500,
     random_state: int=123,
     in_sample_residuals: bool=True,
-    verbose: bool=False
+    verbose: bool=False,
+    tqdm_on: bool=False
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     Backtesting of forecaster multi-series model.
@@ -534,6 +576,9 @@ def backtesting_forecaster_multiseries(
     verbose : bool, default `False`
         Print number of folds and index of training and validation sets used for backtesting.
 
+    tqdm : bool, default 'False'
+        Print Progress by tqdm; Kj Custom Option
+
     Returns 
     -------
     metrics_levels : pandas DataFrame
@@ -574,11 +619,12 @@ def backtesting_forecaster_multiseries(
             f'`refit` is only allowed when `initial_train_size` is not `None`.'
         )
 
-    if interval is not None and type(forecaster).__name__ == 'ForecasterAutoregMultiVariate':
+    #KJ Custom :
+    '''if interval is not None and type(forecaster).__name__ == 'ForecasterAutoregMultiVariate':
         raise TypeError(
             ('Interval prediction is only available when forecaster is of type '
              'ForecasterAutoregMultiSeries.')
-        )
+        )'''
 
     if type(forecaster).__name__ not in ['ForecasterAutoregMultiSeries', 'ForecasterAutoregMultiVariate']:
         raise TypeError(
@@ -615,7 +661,8 @@ def backtesting_forecaster_multiseries(
             n_boot              = n_boot,
             random_state        = random_state,
             in_sample_residuals = in_sample_residuals,
-            verbose             = verbose
+            verbose             = verbose,
+            tqdm_on             = tqdm_on
         )
     else:
         metrics_levels, backtest_predictions = _backtesting_forecaster_multiseries_no_refit(
