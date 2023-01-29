@@ -6,6 +6,7 @@ from joblib import dump, load
 
 #from xgboost import XGBRegressor
 from lightgbm import LGBMRegressor
+from pandas._libs.tslibs.offsets import MonthEnd
 #from catboost import CatBoostRegressor
 
 from sklearn.preprocessing import StandardScaler
@@ -58,41 +59,65 @@ def data_split(data, date):
     return train, test
 
 data = pd.read_excel('./data/reinforce_result.xlsx', sheet_name='History', index_col=0, parse_dates=True)
+data_LEI = pd.read_csv('./data/LEI_TOTL.csv', index_col=0, parse_dates=True)
 m_rtn = pd.read_excel('./data/reinforce_result.xlsx', sheet_name='Kmrtn', index_col=0, parse_dates=True)
 d_rtn = pd.read_excel('./data/reinforce_result.xlsx', sheet_name='Kdrtn', index_col=0, parse_dates=True)
+d_idx = pd.read_excel('./data/reinforce_result.xlsx', sheet_name='Kidx', index_col=0, parse_dates=True)
 
-data = data.drop(labels=['Kospi Rtn', '3m Precision', 'Precision'], axis=1)
+data[['3m Precision', 'Precision']] = data[['3m Precision', 'Precision']].shift(1)
+data = data.drop(
+    labels=['Kospi Rtn'] + list(data.filter(regex='Neutral')), #'3m Precision',  'Precision'
+    axis=1
+    )
 data['model'] = data.apply(model_selection, axis=1)
 data.Forecast = data.Forecast.apply(prediction_categ)
 data.model = data.model.astype('int')
 data.Forecast = data.Forecast.astype('int')
+
+data_LEI.index = data_LEI.index + MonthEnd(1)
+data = pd.merge_asof(data, data_LEI, left_index=True, right_index=True, direction='backward')
 
 rtn_df = pd.DataFrame(columns=['y_Rtn', 'MonthlyRtn'])
 
 for startdate in data.index:
     enddate = startdate + relativedelta(months=1)
     pre_startdate = startdate - relativedelta(months=1)
-
-    if data.index[-1] < enddate:
-        break
+    preweek_startdate = startdate - relativedelta(weeks=1)
 
     windowed = d_rtn[(d_rtn.index>startdate) & (d_rtn.index<=enddate)]
     pre_windowed = d_rtn[(d_rtn.index>pre_startdate) & (d_rtn.index<=startdate)]
+    preweek_windowed = d_rtn[(d_rtn.index>preweek_startdate) & (d_rtn.index<=startdate)]
 
     y_Rtn = ((windowed/100 + 1).prod()-1)*100# / (windowed.std() * np.sqrt(len(windowed)))
     MonthlyRtn = ((pre_windowed / 100 + 1).prod() - 1) * 100# / (pre_windowed.std() * np.sqrt(len(pre_windowed)))
+    WeeklyRtn = ((preweek_windowed / 100 + 1).prod() - 1) * 100
+    #SHARPE = (windowed.std() * np.sqrt(len(windowed)))
+    #pre_SHARPE = (pre_windowed.std() * np.sqrt(len(pre_windowed)))
 
-    rtn_df = rtn_df.append(pd.DataFrame({'y_Rtn':y_Rtn.values,
-                                               'MonthlyRtn':MonthlyRtn.values}
-                                              , index=[startdate]))
+    if data.index[-1] < enddate:
+        rtn_df = rtn_df.append(pd.DataFrame({'y_Rtn': np.nan,
+                                             'MonthlyRtn': MonthlyRtn.values,
+                                             'WeeklyRtn': WeeklyRtn.values}
+                                            , index=[startdate]))
+    else:
+        rtn_df = rtn_df.append(pd.DataFrame({'y_Rtn':y_Rtn.values,
+                                             'MonthlyRtn':MonthlyRtn.values,
+                                             'WeeklyRtn':WeeklyRtn.values}
+                                            , index=[startdate]))
 
 data['MonthlyRtn'] = rtn_df.MonthlyRtn
+data['WeeklyRtn'] = rtn_df.WeeklyRtn
 rtn_df['label'] = rtn_df.y_Rtn.apply(labeling)
 print(rtn_df.groupby(by='label').count())
 
-data = pd.concat([data, rtn_df.y_Rtn], axis=1).dropna()
-end_val = '2015-03-31'
-train, test = data_split(data, end_val)
+data = pd.concat([data, rtn_df.y_Rtn], axis=1)
+#add frequency to data index
+data.index.freq = pd.infer_freq(data.index)
+
+data = data.bfill().dropna()
+
+end_val = '2015-04-30'
+end_val_idx = data.index.get_loc(end_val, method='ffill')
 
 forecaster = ForecasterAutoregMultiVariate(
                  regressor          = LGBMRegressor(random_state=123),
@@ -103,14 +128,14 @@ forecaster = ForecasterAutoregMultiVariate(
                  weight_func        = None,
              )
 
-lags_grid = [52]                                #[12, 26, 52]           #Best:52
+lags_grid = [26]                                #[12, 26, 52]                       #Best:26
 
 param_grid = {
-            'boosting_type': ['gbdt'],          #['gbdt', 'dart']       #Best:gbdt
-            'colsample_bytree': [0.8],          #[0.7, 0.8, 0.9]        #Best:0.8
-            'learning_rate': [0.1, 0.01],       #[0.1, 0.01, 0.001]     #Best 0.1
-            'max_depth': [6, 7, 8, 9, 10],      #[2, 3, 4, 5, 6]        #Best 6
-            'min_child_samples': [3, 5, 10, 20],                        #Best 5
+            'boosting_type': ['dart'],          #['gbdt', 'dart']                   #Best:dart
+            'colsample_bytree': [0.9],          #[0.5, 0.6, 0.7, 0.8, 0.9, 1.0]     #Best:0.9
+            'learning_rate': [0.1],             #[0.1, 0.01, 0.001]                 #Best 0.1
+            'max_depth': [2],                   #[2, 3, 4, 5, 6, 7, 8, 9, 10]       #Best 2
+            'min_child_samples': [4],           #[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]    #Best 4
             'objective': ['regression'],        # or binary
             }
 
@@ -122,22 +147,22 @@ results_grid = grid_search_forecaster_multiseries(
                 steps               = 1,
                 refit               = True,
                 metric              = 'mean_squared_error',
-                initial_train_size  = len(train),
+                initial_train_size  = end_val_idx,
                 fixed_train_size    = False,
                 return_best         = True,
                 verbose             = False
                 )
-
-'''forecaster = ForecasterAutoregMultiVariate(
+'''
+forecaster = ForecasterAutoregMultiVariate(
                  regressor          = LGBMRegressor(random_state=123,
-                                                    boosting_type='gbdt',
-                                                    colsample_bytree=0.8,
-                                                    learning_rate=0.1,
-                                                    max_depth=6,
-                                                    min_child_samples=5,
+                                                    boosting_type='gbdt', #gbdt
+                                                    colsample_bytree=0.8, #0.8
+                                                    learning_rate=0.1, #0.1
+                                                    max_depth=6, #6
+                                                    min_child_samples=5, #5
                                                     objective='regression'),
-                 level              = 'rtn',
-                 lags               = 52,
+                 level              = 'y_Rtn',
+                 lags               = 52, #52
                  steps              = 1,
                  transformer_exog   = None,
                  weight_func        = None,

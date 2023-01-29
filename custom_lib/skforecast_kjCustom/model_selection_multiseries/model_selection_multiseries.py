@@ -17,6 +17,7 @@ from sklearn.model_selection import ParameterGrid
 from sklearn.model_selection import ParameterSampler
 from sklearn.exceptions import NotFittedError
 
+from dateutil.relativedelta import relativedelta
 from scipy.stats import t
 
 from ..model_selection.model_selection import _get_metric
@@ -197,12 +198,13 @@ def _backtesting_forecaster_multiseries_refit(
         # if false the train size increases by `steps` in each iteration.
         train_idx_start = i * steps if fixed_train_size else 0
         train_idx_end = initial_train_size + i * steps
-        
-        exog_train_values = exog.iloc[train_idx_start:train_idx_end, ] if exog is not None else None
-        next_window_exog = exog.iloc[train_idx_end:train_idx_end + steps, ] if exog is not None else None
+        train_idx_end_insample = series.index.get_loc(key=series.index[train_idx_end] - relativedelta(months=1), method='ffill')
+
+        exog_train_values = exog.iloc[train_idx_start:train_idx_end_insample, ] if exog is not None else None
+        next_window_exog = exog.iloc[train_idx_end_insample:train_idx_end_insample + steps, ] if exog is not None else None
 
         forecaster.fit(
-            series                    = series.iloc[train_idx_start:train_idx_end, ], 
+            series                    = series.iloc[train_idx_start:train_idx_end_insample, ],
             exog                      = exog_train_values,
             store_in_sample_residuals = store_in_sample_residuals
         )
@@ -213,18 +215,20 @@ def _backtesting_forecaster_multiseries_refit(
 
         if interval is None:
             pred = forecaster.predict(
-                       steps       = steps, 
+                       steps       = steps,
+                       last_window = series.iloc[train_idx_start:train_idx_end, ],
                        levels      = levels, 
                        exog        = next_window_exog
                    )
         elif interval is not None and 'MultiVariate' in str(forecaster):
             pred = forecaster.predict(
                 steps=steps,
+                last_window=series.iloc[train_idx_start:train_idx_end, ],
                 levels=levels,
                 exog=next_window_exog
             )
             if len(backtest_predictions) >= forecaster.max_lag :
-                if interval_std_window is None:
+                if interval_std_window is None or interval_std_window > len(backtest_predictions):
                     pred_df = pd.concat(backtest_predictions)[forecaster.level]
                 else:
                     pred_df = pd.concat(backtest_predictions)[forecaster.level][-interval_std_window:]
@@ -658,6 +662,7 @@ def backtesting_forecaster_multiseries(
             fixed_train_size    = fixed_train_size,
             exog                = exog,
             interval            = interval,
+            interval_std_window = interval_std_window,
             n_boot              = n_boot,
             random_state        = random_state,
             in_sample_residuals = in_sample_residuals,
