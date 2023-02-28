@@ -9,6 +9,7 @@ from dateutil.relativedelta import relativedelta
 from pandas.tseries.offsets import MonthEnd
 from joblib import dump, load
 
+from model import parameter_setting
 from sklearn.linear_model import Ridge
 from lightgbm import LGBMRegressor
 from sklearn.ensemble import RandomForestRegressor
@@ -29,8 +30,8 @@ def ensemble_learning(var_path_each):
 
     results = []
     level = 'y'
-    lags = 26
     steps = 4
+    parameters = parameter_setting(var_path_each)
 
     with open(var_path_each, 'rb') as f:
         data = pickle.load(f)  # 단 한줄씩 읽어옴
@@ -41,9 +42,9 @@ def ensemble_learning(var_path_each):
         .resample('W-Fri').last().dropna()
 
     forecaster = ForecasterAutoregMultiVariate(
-        regressor=Ridge(alpha=.5),
+        regressor=Ridge(alpha=.98, fit_intercept=False),
         level=level,
-        lags=lags,  # 26
+        lags=13,# 26
         steps=steps
     )
     forecaster.fit(series=X)

@@ -15,6 +15,12 @@ def averageByVariable2(x):
 
     return result
 
+def averageByVariable3(x):
+    result = []
+    result.append(x.mean())
+
+    return result
+
 def getLabelArray(prdData, dIdx):
     '''
     Get Label data for evaluate prediction results
@@ -63,11 +69,30 @@ def getMae(df, rollingWindow):
 def getMaeApply(x):
     return (x - x['y']).abs()
 
-prdData = pd.read_csv('./result_ensemble.csv', index_col=0, parse_dates=True)
+def getMse(df, rollingWindow):
+    '''
+
+    :param df: dataframe with label data
+    :param rollingWindow: MSE average rolling window
+    :return: mse dataframe
+    '''
+    #get MSE value
+    mse = df.apply(getMseApply, axis=1)
+    #drop label value
+    mse = mse.drop(labels='y', axis=1)
+    #calculate 52 weeks rolling average MSE
+    mse_rolling = mse.rolling(rollingWindow, min_periods=1).mean()
+
+    return mse_rolling
+
+def getMseApply(x):
+    return (x - x['y']) ** 2
+
+prdData = pd.read_csv('./result_ensemble2.csv', index_col=0, parse_dates=True)
 dIdx = pd.read_excel('./data/reinforce_result.xlsx', sheet_name='Kidx', index_col=0, parse_dates=True)
 
 #average each model's prediction value by type of variables
-prdData = prdData.apply(averageByVariable2, axis=1, result_type='expand')
+prdData = prdData.apply(averageByVariable, axis=1, result_type='expand')
 
 #get label array
 yActDf = getLabelArray(prdData, dIdx)
@@ -76,10 +101,10 @@ yActDf = getLabelArray(prdData, dIdx)
 data = pd.concat([prdData, yActDf], axis=1)
 
 #get 52 weeks rolling window average MAE of each Models
-mae = getMae(data, 52)
+mae = getMse(data, 26)
 
 #choose BestModel
-bestModel = mae.apply(lambda x: mae.columns[x.argmax()], axis=1).shift(4).dropna() #4
+bestModel = mae.apply(lambda x: mae.columns[x.argmin()], axis=1).shift(4).dropna() #4
 bestModel = pd.DataFrame(bestModel)
 
 #append prediction value of BestModel
@@ -88,4 +113,5 @@ bestModel['prd'] = bestModel.apply(lambda x: data.loc[x.name][x].values[0], axis
 #append actual value of corresponding Date
 bestModel = pd.concat([bestModel, data.y], axis=1).dropna()
 
+print(len(bestModel[(bestModel.prd * bestModel.y > 0)]) / len(bestModel) * 100)
 a=1

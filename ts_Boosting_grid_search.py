@@ -120,7 +120,7 @@ end_val = '2015-04-30'
 end_val_idx = data.index.get_loc(end_val, method='ffill')
 
 forecaster = ForecasterAutoregMultiVariate(
-                 regressor          = LGBMRegressor(random_state=123),
+                 regressor          = Ridge(),
                  level              = 'y_Rtn',
                  lags               = 52,
                  steps              = 1,
@@ -130,27 +130,31 @@ forecaster = ForecasterAutoregMultiVariate(
 
 lags_grid = [26]                                #[12, 26, 52]                       #Best:26
 
-param_grid = {
-            'boosting_type': ['dart'],          #['gbdt', 'dart']                   #Best:dart
+param_distributions = {'alpha': np.arange(start=0.1, stop=1.0, step=0.01, dtype=float),
+                       'fit_intercept': [False, True]}
+
+'''param_grid = {
+            'alpha': [0.1, ],          #['gbdt', 'dart']                   #Best:dart
             'colsample_bytree': [0.9],          #[0.5, 0.6, 0.7, 0.8, 0.9, 1.0]     #Best:0.9
             'learning_rate': [0.1],             #[0.1, 0.01, 0.001]                 #Best 0.1
             'max_depth': [2],                   #[2, 3, 4, 5, 6, 7, 8, 9, 10]       #Best 2
             'min_child_samples': [4],           #[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]    #Best 4
             'objective': ['regression'],        # or binary
-            }
+            }'''
 
-results_grid = grid_search_forecaster_multiseries(
+results_grid = random_search_forecaster_multiseries(
                 forecaster          = forecaster,
                 series              = data,
-                param_grid          = param_grid,
+                param_distributions = param_distributions,
                 lags_grid           = lags_grid,
                 steps               = 1,
                 refit               = True,
-                metric              = 'mean_squared_error',
+                metric              = 'mean_absolute_error',
                 initial_train_size  = end_val_idx,
                 fixed_train_size    = False,
                 return_best         = True,
-                verbose             = False
+                verbose             = False,
+                random_state        = 123
                 )
 '''
 forecaster = ForecasterAutoregMultiVariate(
